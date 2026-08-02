@@ -12,8 +12,9 @@ test("store persists snapshots and calculates local quota", () => {
     store.recordQuota("videos.list", "data", 1);
     store.recordQuota("search.list", "search", 1);
     const quota = store.quotaToday();
-    assert.equal(quota.dataUnits, 1);
-    assert.equal(quota.searchCalls, 1);
+    assert.equal(quota.estimatedUnits, 2);
+    assert.equal(quota.otherDataUnits, 1);
+    assert.equal(quota.searchUnits, 1);
     assert.equal(quota.calls, 2);
 
     store.saveSnapshots([
@@ -44,6 +45,22 @@ test("store persists snapshots and calculates local quota", () => {
 
     store.setCache("key", { value: 1 }, 60);
     assert.deepEqual(store.getCache("key"), { value: 1 });
+
+    const first = store.beginUploadOperation("operation-1", "fingerprint-1");
+    assert.equal(first.created, true);
+    const duplicate = store.beginUploadOperation("operation-1", "fingerprint-1");
+    assert.equal(duplicate.created, false);
+    assert.equal(duplicate.operation.state, "in_progress");
+    store.completeUploadOperation("operation-1", "video-1", { id: "video-1" });
+    assert.equal(store.getUploadOperation("operation-1")?.state, "completed");
+
+    store.recordWriteAudit({
+      operation: "videos.insert",
+      target: "video-1",
+      confirmation: "APPLY",
+      outcome: "succeeded",
+    });
+    assert.equal(store.writeAudit(1)[0]?.["target"], "video-1");
   } finally {
     store.close();
     fs.rmSync(tempDir, { recursive: true, force: true });

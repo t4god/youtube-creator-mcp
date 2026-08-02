@@ -96,19 +96,20 @@ export class ResearchService {
       return date.toISOString();
     })();
     const { youtube } = await this.client.context(false);
-    this.client.record("search", "list");
-    const search = await youtube.search.list({
-      part: ["snippet"],
-      q: input.query,
-      type: ["video"],
-      maxResults: normalized.maxResults,
-      order: normalized.order,
-      publishedAfter,
-      ...(input.publishedBefore ? { publishedBefore: input.publishedBefore } : {}),
-      ...(input.regionCode ? { regionCode: input.regionCode } : {}),
-      ...(input.relevanceLanguage ? { relevanceLanguage: input.relevanceLanguage } : {}),
-      ...(input.videoDuration ? { videoDuration: input.videoDuration } : {}),
-    });
+    const search = await this.client.executeRead("search", "list", (options) =>
+      youtube.search.list({
+        part: ["snippet"],
+        q: input.query,
+        type: ["video"],
+        maxResults: normalized.maxResults,
+        order: normalized.order,
+        publishedAfter,
+        ...(input.publishedBefore ? { publishedBefore: input.publishedBefore } : {}),
+        ...(input.regionCode ? { regionCode: input.regionCode } : {}),
+        ...(input.relevanceLanguage ? { relevanceLanguage: input.relevanceLanguage } : {}),
+        ...(input.videoDuration ? { videoDuration: input.videoDuration } : {}),
+      }, options),
+    );
     const videoIds = (search.data.items ?? [])
       .map((item) => item.id?.videoId)
       .filter((id): id is string => Boolean(id));

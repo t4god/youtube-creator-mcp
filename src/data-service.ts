@@ -15,8 +15,9 @@ export class DataService {
     const all: youtube_v3.Schema$Video[] = [];
     for (const batch of chunks(ids, 50)) {
       const { youtube } = await this.client.context(false);
-      this.client.record("videos", "list");
-      const response = await youtube.videos.list({ part: parts, id: batch });
+      const response = await this.client.executeRead("videos", "list", (options) =>
+        youtube.videos.list({ part: parts, id: batch }, options),
+      );
       all.push(...(response.data.items ?? []));
     }
     return all;
@@ -27,8 +28,9 @@ export class DataService {
     const all: youtube_v3.Schema$Channel[] = [];
     for (const batch of chunks(ids, 50)) {
       const { youtube } = await this.client.context(false);
-      this.client.record("channels", "list");
-      const response = await youtube.channels.list({ part: parts, id: batch });
+      const response = await this.client.executeRead("channels", "list", (options) =>
+        youtube.channels.list({ part: parts, id: batch }, options),
+      );
       all.push(...(response.data.items ?? []));
     }
     return all;
@@ -36,11 +38,12 @@ export class DataService {
 
   async myChannel(): Promise<youtube_v3.Schema$Channel | null> {
     const { youtube } = await this.client.context(true);
-    this.client.record("channels", "list");
-    const response = await youtube.channels.list({
-      part: ["snippet", "statistics", "contentDetails", "brandingSettings", "status", "topicDetails"],
-      mine: true,
-    });
+    const response = await this.client.executeRead("channels", "list", (options) =>
+      youtube.channels.list({
+        part: ["snippet", "statistics", "contentDetails", "brandingSettings", "status", "topicDetails"],
+        mine: true,
+      }, options),
+    );
     return response.data.items?.[0] ?? null;
   }
 
@@ -51,21 +54,23 @@ export class DataService {
     pageToken?: string;
   }): Promise<Record<string, unknown>> {
     const { youtube } = await this.client.context(Boolean(input.mine));
-    this.client.record("channels", "list");
-    const channelResponse = await youtube.channels.list({
-      part: ["snippet", "contentDetails"],
-      ...(input.mine ? { mine: true } : { id: [input.channelId ?? ""] }),
-    });
+    const channelResponse = await this.client.executeRead("channels", "list", (options) =>
+      youtube.channels.list({
+        part: ["snippet", "contentDetails"],
+        ...(input.mine ? { mine: true } : { id: [input.channelId ?? ""] }),
+      }, options),
+    );
     const channel = channelResponse.data.items?.[0];
     const uploadsId = channel?.contentDetails?.relatedPlaylists?.uploads;
     if (!uploadsId) return { channel: channel ?? null, items: [], nextPageToken: null };
-    this.client.record("playlistItems", "list");
-    const response = await youtube.playlistItems.list({
-      part: ["snippet", "contentDetails", "status"],
-      playlistId: uploadsId,
-      maxResults: Math.min(input.maxResults ?? 50, 50),
-      ...(input.pageToken ? { pageToken: input.pageToken } : {}),
-    });
+    const response = await this.client.executeRead("playlistItems", "list", (options) =>
+      youtube.playlistItems.list({
+        part: ["snippet", "contentDetails", "status"],
+        playlistId: uploadsId,
+        maxResults: Math.min(input.maxResults ?? 50, 50),
+        ...(input.pageToken ? { pageToken: input.pageToken } : {}),
+      }, options),
+    );
     const videoIds = (response.data.items ?? [])
       .map((item) => item.contentDetails?.videoId)
       .filter((id): id is string => Boolean(id));
@@ -91,21 +96,22 @@ export class DataService {
     moderationStatus?: "heldForReview" | "likelySpam" | "published";
   }): Promise<unknown> {
     const { youtube } = await this.client.context(Boolean(input.moderationStatus));
-    this.client.record("commentThreads", "list");
-    const response = await youtube.commentThreads.list({
-      part: ["snippet", "replies"],
-      ...(input.videoId ? { videoId: input.videoId } : {}),
-      ...(input.channelId ? { channelId: input.channelId } : {}),
-      ...(input.allThreadsRelatedToChannelId
-        ? { allThreadsRelatedToChannelId: input.allThreadsRelatedToChannelId }
-        : {}),
-      maxResults: Math.min(input.maxResults ?? 100, 100),
-      order: input.order ?? "relevance",
-      textFormat: "plainText",
-      ...(input.pageToken ? { pageToken: input.pageToken } : {}),
-      ...(input.searchTerms ? { searchTerms: input.searchTerms } : {}),
-      ...(input.moderationStatus ? { moderationStatus: input.moderationStatus } : {}),
-    });
+    const response = await this.client.executeRead("commentThreads", "list", (options) =>
+      youtube.commentThreads.list({
+        part: ["snippet", "replies"],
+        ...(input.videoId ? { videoId: input.videoId } : {}),
+        ...(input.channelId ? { channelId: input.channelId } : {}),
+        ...(input.allThreadsRelatedToChannelId
+          ? { allThreadsRelatedToChannelId: input.allThreadsRelatedToChannelId }
+          : {}),
+        maxResults: Math.min(input.maxResults ?? 100, 100),
+        order: input.order ?? "relevance",
+        textFormat: "plainText",
+        ...(input.pageToken ? { pageToken: input.pageToken } : {}),
+        ...(input.searchTerms ? { searchTerms: input.searchTerms } : {}),
+        ...(input.moderationStatus ? { moderationStatus: input.moderationStatus } : {}),
+      }, options),
+    );
     return response.data;
   }
 

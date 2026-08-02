@@ -33,21 +33,23 @@ export class AnalyticsService {
 
   async query(input: AnalyticsQuery): Promise<Record<string, unknown>> {
     const { analytics } = await this.client.context(true);
-    const response = await analytics.reports.query({
-      ids: input.ids ?? "channel==MINE",
-      startDate: input.startDate,
-      endDate: input.endDate,
-      metrics: input.metrics,
-      ...(input.dimensions ? { dimensions: input.dimensions } : {}),
-      ...(input.filters ? { filters: input.filters } : {}),
-      ...(input.sort ? { sort: input.sort } : {}),
-      ...(input.maxResults ? { maxResults: input.maxResults } : {}),
-      ...(input.startIndex ? { startIndex: input.startIndex } : {}),
-      ...(input.currency ? { currency: input.currency } : {}),
-      ...(input.includeHistoricalChannelData !== undefined
-        ? { includeHistoricalChannelData: input.includeHistoricalChannelData }
-        : {}),
-    });
+    const response = await this.client.executeRead("analytics.reports", "query", (options) =>
+      analytics.reports.query({
+        ids: input.ids ?? "channel==MINE",
+        startDate: input.startDate,
+        endDate: input.endDate,
+        metrics: input.metrics,
+        ...(input.dimensions ? { dimensions: input.dimensions } : {}),
+        ...(input.filters ? { filters: input.filters } : {}),
+        ...(input.sort ? { sort: input.sort } : {}),
+        ...(input.maxResults ? { maxResults: input.maxResults } : {}),
+        ...(input.startIndex ? { startIndex: input.startIndex } : {}),
+        ...(input.currency ? { currency: input.currency } : {}),
+        ...(input.includeHistoricalChannelData !== undefined
+          ? { includeHistoricalChannelData: input.includeHistoricalChannelData }
+          : {}),
+      }, options), false,
+    );
     return normalizeReport(response.data as Parameters<typeof normalizeReport>[0]);
   }
 

@@ -3,10 +3,22 @@ import type { SnapshotVideo } from "./types.js";
 
 export interface QuotaSummary {
   date: string;
-  dataUnits: number;
-  searchCalls: number;
-  uploadCalls: number;
+  estimatedUnits: number;
+  otherDataUnits: number;
+  searchUnits: number;
+  uploadUnits: number;
   calls: number;
+}
+
+export interface UploadOperation {
+  operationId: string;
+  fingerprint: string;
+  state: "in_progress" | "completed" | "failed";
+  videoId: string | null;
+  response: unknown;
+  error: unknown;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export class Store {
@@ -14,7 +26,7 @@ export class Store {
 
   constructor(databasePath: string) {
     this.db = new DatabaseSync(databasePath);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS quota_events (
         id INTEGER PRIMARY KEY,
@@ -44,7 +56,30 @@ export class Store {
         value_json TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS upload_operations (
+        operation_id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('in_progress', 'completed', 'failed')),
+        video_id TEXT,
+        response_json TEXT,
+        error_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS write_audit (
+        id INTEGER PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        target TEXT,
+        confirmation TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        details_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS write_audit_time_idx ON write_audit(occurred_at DESC);
     `);
+    this.db.exec("PRAGMA user_version=2; DELETE FROM cache WHERE expires_at <= unixepoch('now') * 1000;");
   }
 
   close(): void {
@@ -75,13 +110,21 @@ export class Store {
         bucket: string;
         cost: number;
       }>;
-    const summary: QuotaSummary = { date, dataUnits: 0, searchCalls: 0, uploadCalls: 0, calls: 0 };
+    const summary: QuotaSummary = {
+      date,
+      estimatedUnits: 0,
+      otherDataUnits: 0,
+      searchUnits: 0,
+      uploadUnits: 0,
+      calls: 0,
+    };
     for (const row of rows) {
       if (formatter.format(new Date(row.occurred_at)) !== date) continue;
       summary.calls += 1;
-      if (row.bucket === "data") summary.dataUnits += row.cost;
-      if (row.bucket === "search") summary.searchCalls += row.cost;
-      if (row.bucket === "upload") summary.uploadCalls += row.cost;
+      summary.estimatedUnits += row.cost;
+      if (row.bucket === "data") summary.otherDataUnits += row.cost;
+      if (row.bucket === "search") summary.searchUnits += row.cost;
+      if (row.bucket === "upload") summary.uploadUnits += row.cost;
     }
     return summary;
   }
@@ -157,5 +200,79 @@ export class Store {
          ON CONFLICT(cache_key) DO UPDATE SET value_json=excluded.value_json, expires_at=excluded.expires_at`,
       )
       .run(key, JSON.stringify(value), Date.now() + ttlSeconds * 1000);
+  }
+
+  getUploadOperation(operationId: string): UploadOperation | null {
+    const row = this.db.prepare("SELECT * FROM upload_operations WHERE operation_id = ?").get(operationId) as
+      | Record<string, string | null>
+      | undefined;
+    if (!row) return null;
+    return {
+      operationId: String(row.operation_id),
+      fingerprint: String(row.fingerprint),
+      state: row.state as UploadOperation["state"],
+      videoId: row.video_id ?? null,
+      response: row.response_json ? JSON.parse(row.response_json) : null,
+      error: row.error_json ? JSON.parse(row.error_json) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  beginUploadOperation(operationId: string, fingerprint: string): { created: boolean; operation: UploadOperation } {
+    const now = new Date().toISOString();
+    const result = this.db.prepare(
+      `INSERT INTO upload_operations(operation_id, fingerprint, state, created_at, updated_at)
+       VALUES(?, ?, 'in_progress', ?, ?) ON CONFLICT(operation_id) DO NOTHING`,
+    ).run(operationId, fingerprint, now, now);
+    return { created: result.changes === 1, operation: this.getUploadOperation(operationId)! };
+  }
+
+  completeUploadOperation(operationId: string, videoId: string, response: unknown): void {
+    this.db.prepare(
+      `UPDATE upload_operations SET state='completed', video_id=?, response_json=?, error_json=NULL, updated_at=?
+       WHERE operation_id=?`,
+    ).run(videoId, JSON.stringify(response), new Date().toISOString(), operationId);
+  }
+
+  failUploadOperation(operationId: string, error: unknown): void {
+    this.db.prepare(
+      `UPDATE upload_operations SET state='failed', error_json=?, updated_at=? WHERE operation_id=?`,
+    ).run(JSON.stringify(error), new Date().toISOString(), operationId);
+  }
+
+  recordWriteAudit(input: {
+    operation: string;
+    target?: string;
+    confirmation: string;
+    outcome: "started" | "succeeded" | "failed" | "deduplicated";
+    details?: unknown;
+  }): void {
+    this.db.prepare(
+      `INSERT INTO write_audit(occurred_at, operation, target, confirmation, outcome, details_json)
+       VALUES(?, ?, ?, ?, ?, ?)`,
+    ).run(
+      new Date().toISOString(),
+      input.operation,
+      input.target ?? null,
+      input.confirmation,
+      input.outcome,
+      input.details === undefined ? null : JSON.stringify(input.details),
+    );
+  }
+
+  writeAudit(limit = 100): Array<Record<string, unknown>> {
+    const rows = this.db.prepare(
+      `SELECT occurred_at, operation, target, confirmation, outcome, details_json
+       FROM write_audit ORDER BY id DESC LIMIT ?`,
+    ).all(Math.min(Math.max(limit, 1), 500)) as Array<Record<string, string | null>>;
+    return rows.map((row) => ({
+      occurredAt: row.occurred_at,
+      operation: row.operation,
+      target: row.target,
+      confirmation: row.confirmation,
+      outcome: row.outcome,
+      details: row.details_json ? JSON.parse(row.details_json) : null,
+    }));
   }
 }
