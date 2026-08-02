@@ -101,6 +101,11 @@ export function createServer() {
         "youtube_get_channels",
         "youtube_channel_uploads",
         "youtube_comments",
+        "youtube_post_comment",
+        "youtube_reply_to_comment",
+        "youtube_update_comment",
+        "youtube_moderate_comment",
+        "youtube_delete_comment",
         "youtube_analytics_query",
         "youtube_analytics_report",
         "youtube_topic_research",
@@ -195,6 +200,137 @@ export function createServer() {
       annotations: readAnnotations,
     },
     handler((args: Parameters<DataService["comments"]>[0]) => data.comments(args)),
+  );
+
+  server.registerTool(
+    "youtube_post_comment",
+    {
+      title: "Post a YouTube comment",
+      description: "Post a new top-level comment on a video. Requires the write gate and confirm=\"APPLY\".",
+      inputSchema: z.object({
+        videoId: z.string().min(1),
+        text: z.string().min(1).max(10_000),
+        channelId: z.string().optional(),
+        confirm: z.literal("APPLY").optional(),
+      }),
+      annotations: safeWriteAnnotations,
+    },
+    handler(({ videoId, text, channelId, confirm }: {
+      videoId: string; text: string; channelId?: string; confirm?: "APPLY";
+    }) => client.dataCall({
+      resource: "commentThreads",
+      method: "insert",
+      params: { part: ["snippet"] },
+      body: {
+        snippet: {
+          videoId,
+          ...(channelId ? { channelId } : {}),
+          topLevelComment: { snippet: { textOriginal: text } },
+        },
+      },
+      confirm,
+    })),
+  );
+
+  server.registerTool(
+    "youtube_reply_to_comment",
+    {
+      title: "Reply to a YouTube comment",
+      description: "Reply within an existing top-level comment thread. Requires the write gate and confirm=\"APPLY\".",
+      inputSchema: z.object({
+        parentId: z.string().min(1),
+        text: z.string().min(1).max(10_000),
+        confirm: z.literal("APPLY").optional(),
+      }),
+      annotations: safeWriteAnnotations,
+    },
+    handler(({ parentId, text, confirm }: { parentId: string; text: string; confirm?: "APPLY" }) =>
+      client.dataCall({
+        resource: "comments",
+        method: "insert",
+        params: { part: ["snippet"] },
+        body: { snippet: { parentId, textOriginal: text } },
+        confirm,
+      })),
+  );
+
+  server.registerTool(
+    "youtube_update_comment",
+    {
+      title: "Update a YouTube comment",
+      description: "Edit a comment or reply owned by the authenticated channel. Requires the write gate and confirm=\"APPLY\".",
+      inputSchema: z.object({
+        commentId: z.string().min(1),
+        text: z.string().min(1).max(10_000),
+        confirm: z.literal("APPLY").optional(),
+      }),
+      annotations: safeWriteAnnotations,
+    },
+    handler(({ commentId, text, confirm }: { commentId: string; text: string; confirm?: "APPLY" }) =>
+      client.dataCall({
+        resource: "comments",
+        method: "update",
+        params: { part: ["snippet"] },
+        body: { id: commentId, snippet: { textOriginal: text } },
+        confirm,
+      })),
+  );
+
+  server.registerTool(
+    "youtube_moderate_comment",
+    {
+      title: "Moderate a YouTube comment",
+      description: "Publish, hold, or reject a comment on the authenticated channel. Optionally ban the author when rejecting. Requires the write gate and confirm=\"APPLY\".",
+      inputSchema: z.object({
+        commentId: z.string().min(1),
+        moderationStatus: z.enum(["published", "heldForReview", "rejected"]),
+        banAuthor: z.boolean().default(false),
+        confirm: z.literal("APPLY").optional(),
+      }).superRefine((value, ctx) => {
+        if (value.banAuthor && value.moderationStatus !== "rejected") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["banAuthor"],
+            message: "banAuthor can only be used with moderationStatus=\"rejected\".",
+          });
+        }
+      }),
+      annotations: safeWriteAnnotations,
+    },
+    handler(({ commentId, moderationStatus, banAuthor, confirm }: {
+      commentId: string;
+      moderationStatus: "published" | "heldForReview" | "rejected";
+      banAuthor: boolean;
+      confirm?: "APPLY";
+    }) => client.dataCall({
+      resource: "comments",
+      method: "setModerationStatus",
+      params: {
+        id: commentId,
+        moderationStatus,
+        ...(banAuthor ? { banAuthor: true } : {}),
+      },
+      confirm,
+    })),
+  );
+
+  server.registerTool(
+    "youtube_delete_comment",
+    {
+      title: "Delete a YouTube comment",
+      description: "Permanently delete a comment owned by the authenticated channel. Requires destructive actions to be enabled and confirm=\"DELETE\".",
+      inputSchema: z.object({
+        commentId: z.string().min(1),
+        confirm: z.literal("DELETE").optional(),
+      }),
+      annotations: writeAnnotations,
+    },
+    handler(({ commentId, confirm }: { commentId: string; confirm?: "DELETE" }) => client.dataCall({
+      resource: "comments",
+      method: "delete",
+      params: { id: commentId },
+      confirm,
+    })),
   );
 
   server.registerTool(
