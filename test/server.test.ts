@@ -26,7 +26,7 @@ test("MCP initializes, lists its full tool catalog, and serves local quota statu
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const listed = await client.listTools();
     const names = listed.tools.map((tool) => tool.name);
-    assert.ok(names.length >= 26);
+    assert.ok(names.length >= 31);
     assert.ok(names.includes("youtube_topic_research"));
     assert.ok(names.includes("youtube_analytics_query"));
     assert.ok(names.includes("youtube_data_call"));
@@ -35,6 +35,11 @@ test("MCP initializes, lists its full tool catalog, and serves local quota statu
     assert.ok(names.includes("youtube_upload_plan"));
     assert.ok(names.includes("youtube_upload_video"));
     assert.ok(names.includes("youtube_write_audit"));
+    assert.ok(names.includes("youtube_post_comment"));
+    assert.ok(names.includes("youtube_reply_to_comment"));
+    assert.ok(names.includes("youtube_update_comment"));
+    assert.ok(names.includes("youtube_moderate_comment"));
+    assert.ok(names.includes("youtube_delete_comment"));
 
     const result = await client.callTool({ name: "youtube_quota_status", arguments: {} });
     assert.equal(result.isError, undefined);
@@ -86,6 +91,20 @@ test("MCP initializes, lists its full tool catalog, and serves local quota statu
     assert.equal(blockedUpload.isError, true);
     assert.equal(
       (blockedUpload.structuredContent as { error?: { code?: string } })?.error?.code,
+      "writes_disabled",
+    );
+
+    const blockedComment = await client.callTool({
+      name: "youtube_post_comment",
+      arguments: {
+        videoId: "video-1",
+        text: "A blocked test comment",
+        confirm: "APPLY",
+      },
+    });
+    assert.equal(blockedComment.isError, true);
+    assert.equal(
+      (blockedComment.structuredContent as { error?: { code?: string } })?.error?.code,
       "writes_disabled",
     );
   } finally {

@@ -196,6 +196,17 @@ key directly into a configuration file.
 
 Batch ID tools accept up to 500 IDs and issue batches of 50 per API request.
 
+### Comment management
+
+- `youtube_post_comment`: post a top-level comment on a video
+- `youtube_reply_to_comment`: reply to an existing comment thread
+- `youtube_update_comment`: edit a comment or reply owned by the authenticated channel
+- `youtube_moderate_comment`: publish, hold, reject, or reject-and-ban on the authenticated channel
+- `youtube_delete_comment`: permanently delete an owned comment
+
+Posting, replying, editing, and moderation require the write gate and `confirm="APPLY"`.
+Deletion additionally requires the destructive gate and `confirm="DELETE"`.
+
 ### Analytics
 
 - `youtube_analytics_query`: custom `reports.query` request with named and raw rows
@@ -265,6 +276,22 @@ confirm="DELETE"
 
 Turn the flags off again after the intended operation. Media operations additionally
 require comma-separated absolute directories in `YOUTUBE_MCP_MEDIA_ROOTS`.
+
+### Persistent creator mode
+
+For a trusted personal installation, the non-destructive write and publication gates can
+stay enabled in the MCP client configuration. Per-call `APPLY` and `PUBLISH` confirmations
+still apply, so enabling these flags does not silently authorize an action.
+
+```toml
+[mcp_servers.youtube.env]
+YOUTUBE_MCP_ENABLE_WRITES = "true"
+YOUTUBE_MCP_ENABLE_PUBLICATION = "true"
+YOUTUBE_MCP_ENABLE_DESTRUCTIVE = "false"
+```
+
+Restart the MCP client after changing its configuration. Keep destructive actions disabled
+persistently; enable them only for a reviewed delete, unset, or abuse-report operation.
 
 ## Configuration
 

@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Added
+
+- Typed tools to post, reply to, edit, moderate, and delete YouTube comments with the
+  existing write audit and confirmation guardrails.
+- A documented persistent creator-mode configuration for trusted personal MCP installs.
+
 ## 0.2.0 - 2026-08-02
 
 ### Added
