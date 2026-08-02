@@ -1,0 +1,48 @@
+{
+  "name": "youtube-creator-mcp",
+  "version": "0.1.0",
+  "description": "Full-scale local YouTube MCP server for research, analytics, reporting, live streams, and guarded channel management.",
+  "license": "MIT",
+  "author": "t4god",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/t4god/youtube-creator-mcp.git"
+  },
+  "homepage": "https://github.com/t4god/youtube-creator-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/t4god/youtube-creator-mcp/issues"
+  },
+  "keywords": ["mcp", "youtube", "youtube-analytics", "youtube-api", "codex", "claude"],
+  "type": "module",
+  "bin": {
+    "youtube-mcp": "dist/cli.js"
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && npm run build:keychain && tsc -p tsconfig.json",
+    "build:keychain": "node scripts/build-keychain.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/cli.ts serve",
+    "serve": "node dist/cli.js serve",
+    "auth": "node dist/cli.js auth",
+    "status": "node dist/cli.js status",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/cli.js serve",
+    "prepublishOnly": "npm run check && npm test && npm run build"
+  },
+  "files": ["dist", "bin", "native", "scripts", "README.md", "LICENSE"],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "google-auth-library": "^10.9.1",
+    "googleapis": "^173.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

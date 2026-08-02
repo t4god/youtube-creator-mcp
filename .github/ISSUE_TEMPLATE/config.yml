@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/t4god/youtube-creator-mcp/security/advisories/new
+    about: Report credential, authorization, file-access, or write-safety vulnerabilities privately.

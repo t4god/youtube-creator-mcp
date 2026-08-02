@@ -1,0 +1,422 @@
+import fs from "node:fs";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { authStatus } from "./auth.js";
+import { loadConfig, resolveMediaPath } from "./config.js";
+import { Store } from "./store.js";
+import { YouTubeClient } from "./google.js";
+import { DataService } from "./data-service.js";
+import { AnalyticsService } from "./analytics-service.js";
+import { ResearchService } from "./research-service.js";
+import { ReportingService } from "./reporting-service.js";
+import { toolError, toolResult } from "./result.js";
+
+const readAnnotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
+const writeAnnotations = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+const localWriteAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
+
+function handler<T>(fn: (args: T) => Promise<unknown> | unknown) {
+  return async (args: T) => {
+    try {
+      return toolResult(await fn(args));
+    } catch (error) {
+      return toolError(error);
+    }
+  };
+}
+
+export function createServer() {
+  const config = loadConfig();
+  const store = new Store(config.databasePath);
+  const client = new YouTubeClient(config, store);
+  const data = new DataService(client, store);
+  const analytics = new AnalyticsService(client);
+  const research = new ResearchService(config, store, client, data);
+  const reporting = new ReportingService(config, client);
+
+  const server = new McpServer(
+    { name: "youtube-mcp", version: "0.1.0" },
+    {
+      instructions:
+        "Use high-level read tools before youtube_data_call. Search calls have a separate daily bucket, so reuse cached topic research when possible. Snapshot competitor videos repeatedly before claiming true velocity. Writes are disabled by default; never enable them or pass APPLY/DELETE without explicit user approval. Analytics and private channel data require OAuth. Do not expose OAuth tokens, client secrets, or Keychain contents.",
+    },
+  );
+
+  server.registerTool(
+    "youtube_auth_status",
+    {
+      title: "YouTube authorization status",
+      description: "Check whether OAuth is configured and which capability profile/scopes are active. Never returns credentials.",
+      inputSchema: z.object({}),
+      annotations: readAnnotations,
+    },
+    handler(async () => ({ ...(await authStatus()), authProfiles: ["readonly", "monetary", "manager", "full", "partner"] })),
+  );
+
+  server.registerTool(
+    "youtube_quota_status",
+    {
+      title: "Local YouTube quota estimate",
+      description: "Show calls recorded by this MCP today. This is an estimate, not the Google Cloud project's authoritative quota usage.",
+      inputSchema: z.object({}),
+      annotations: readAnnotations,
+    },
+    handler(() => ({
+      localEstimate: store.quotaToday(),
+      defaultDailyBuckets: { searchCalls: 100, uploadCalls: 100, otherDataUnits: 10_000 },
+      resetTimezone: "America/Los_Angeles",
+    })),
+  );
+
+  server.registerTool(
+    "youtube_capabilities",
+    {
+      title: "YouTube MCP capabilities",
+      description: "List the Data/Live and Reporting API resources and methods available through the installed Google client.",
+      inputSchema: z.object({ includeReporting: z.boolean().default(true) }),
+      annotations: readAnnotations,
+    },
+    handler(async ({ includeReporting }: { includeReporting: boolean }) => ({
+      dataAndLive: await client.capabilities(),
+      ...(includeReporting ? { reporting: await reporting.capabilities() } : {}),
+      highLevelTools: [
+        "youtube_my_channel",
+        "youtube_get_videos",
+        "youtube_get_channels",
+        "youtube_channel_uploads",
+        "youtube_comments",
+        "youtube_analytics_query",
+        "youtube_analytics_report",
+        "youtube_topic_research",
+        "youtube_compare_topics",
+        "youtube_snapshot_videos",
+        "youtube_snapshot_history",
+        "youtube_data_read",
+        "youtube_reporting_read",
+      ],
+    })),
+  );
+
+  server.registerTool(
+    "youtube_my_channel",
+    {
+      title: "My YouTube channel",
+      description: "Get the authenticated channel's metadata, public statistics, uploads playlist, status, and branding settings.",
+      inputSchema: z.object({}),
+      annotations: readAnnotations,
+    },
+    handler(() => data.myChannel()),
+  );
+
+  server.registerTool(
+    "youtube_get_videos",
+    {
+      title: "Get YouTube videos",
+      description: "Batch-fetch up to 500 video resources by ID, 50 per API request.",
+      inputSchema: z.object({
+        videoIds: z.array(z.string().min(1)).min(1).max(500),
+        parts: z.array(z.string()).optional(),
+      }),
+      annotations: readAnnotations,
+    },
+    handler(({ videoIds, parts }: { videoIds: string[]; parts?: string[] }) => data.videos(videoIds, parts)),
+  );
+
+  server.registerTool(
+    "youtube_get_channels",
+    {
+      title: "Get YouTube channels",
+      description: "Batch-fetch up to 500 channel resources by ID, including subscriber/view/video counts and uploads playlist IDs.",
+      inputSchema: z.object({
+        channelIds: z.array(z.string().min(1)).min(1).max(500),
+        parts: z.array(z.string()).optional(),
+      }),
+      annotations: readAnnotations,
+    },
+    handler(({ channelIds, parts }: { channelIds: string[]; parts?: string[] }) => data.channels(channelIds, parts)),
+  );
+
+  server.registerTool(
+    "youtube_channel_uploads",
+    {
+      title: "YouTube channel uploads",
+      description: "List a public or authenticated channel's uploads with fully hydrated video statistics.",
+      inputSchema: z.object({
+        channelId: z.string().optional(),
+        mine: z.boolean().default(false),
+        maxResults: z.number().int().min(1).max(50).default(50),
+        pageToken: z.string().optional(),
+      }).refine((value) => value.mine || Boolean(value.channelId), { message: "Provide channelId or set mine=true." }),
+      annotations: readAnnotations,
+    },
+    handler((args: { channelId?: string; mine: boolean; maxResults: number; pageToken?: string }) => data.channelUploads(args)),
+  );
+
+  server.registerTool(
+    "youtube_comments",
+    {
+      title: "YouTube comments",
+      description: "List comment threads and included replies for a video or channel, with optional text search and owner moderation filters.",
+      inputSchema: z.object({
+        videoId: z.string().optional(),
+        channelId: z.string().optional(),
+        allThreadsRelatedToChannelId: z.string().optional(),
+        maxResults: z.number().int().min(1).max(100).default(100),
+        pageToken: z.string().optional(),
+        order: z.enum(["time", "relevance"]).default("relevance"),
+        searchTerms: z.string().optional(),
+        moderationStatus: z.enum(["heldForReview", "likelySpam", "published"]).optional(),
+      }).refine(
+        (value) => Boolean(value.videoId || value.channelId || value.allThreadsRelatedToChannelId),
+        { message: "Provide videoId, channelId, or allThreadsRelatedToChannelId." },
+      ),
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<DataService["comments"]>[0]) => data.comments(args)),
+  );
+
+  server.registerTool(
+    "youtube_analytics_query",
+    {
+      title: "Query YouTube Analytics",
+      description: "Run a fully custom YouTube Analytics reports.query request and return both named rows and raw rows.",
+      inputSchema: z.object({
+        ids: z.string().default("channel==MINE"),
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        metrics: z.string().min(1),
+        dimensions: z.string().optional(),
+        filters: z.string().optional(),
+        sort: z.string().optional(),
+        maxResults: z.number().int().positive().optional(),
+        startIndex: z.number().int().positive().optional(),
+        currency: z.string().length(3).optional(),
+        includeHistoricalChannelData: z.boolean().optional(),
+      }),
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<AnalyticsService["query"]>[0]) => analytics.query(args)),
+  );
+
+  server.registerTool(
+    "youtube_analytics_report",
+    {
+      title: "YouTube Analytics report",
+      description: "Run a validated high-level report: overview, trends, top videos, traffic sources, search terms, geography, devices, demographics, or retention.",
+      inputSchema: z.object({
+        report: z.enum([
+          "channel_overview",
+          "daily_trends",
+          "top_videos",
+          "traffic_sources",
+          "search_terms",
+          "geography",
+          "devices",
+          "demographics",
+          "retention",
+        ]),
+        days: z.number().int().min(1).max(3650).default(28),
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        videoId: z.string().optional(),
+        maxResults: z.number().int().positive().max(500).default(50),
+        monetary: z.boolean().default(false),
+        currency: z.string().length(3).optional(),
+      }),
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<AnalyticsService["preset"]>[0]) => analytics.preset(args)),
+  );
+
+  const topicSchema = z.object({
+    query: z.string().min(1),
+    days: z.number().int().min(1).max(3650).default(90),
+    maxResults: z.number().int().min(1).max(50).default(25),
+    order: z.enum(["date", "rating", "relevance", "title", "videoCount", "viewCount"]).default("relevance"),
+    regionCode: z.string().length(2).optional(),
+    relevanceLanguage: z.string().optional(),
+    videoDuration: z.enum(["any", "long", "medium", "short"]).optional(),
+    publishedAfter: z.string().datetime().optional(),
+    publishedBefore: z.string().datetime().optional(),
+    forceRefresh: z.boolean().default(false),
+  });
+
+  server.registerTool(
+    "youtube_topic_research",
+    {
+      title: "Research a YouTube topic",
+      description: "Sample current topic results, hydrate video/channel stats, and calculate demand, velocity proxies, competition, and breakout indicators. Cached briefly to protect search quota.",
+      inputSchema: topicSchema,
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<ResearchService["topic"]>[0]) => research.topic(args)),
+  );
+
+  server.registerTool(
+    "youtube_compare_topics",
+    {
+      title: "Compare YouTube topics",
+      description: "Research and rank 2-8 topic samples using the same methodology and median views/day basis.",
+      inputSchema: z.object({ topics: z.array(topicSchema).min(2).max(8) }),
+      annotations: readAnnotations,
+    },
+    handler(({ topics }: { topics: Parameters<ResearchService["topic"]>[0][] }) => research.compare(topics)),
+  );
+
+  server.registerTool(
+    "youtube_snapshot_videos",
+    {
+      title: "Snapshot YouTube video statistics",
+      description: "Fetch and persist current view/like/comment counts for up to 500 videos for longitudinal competitor and velocity tracking.",
+      inputSchema: z.object({ videoIds: z.array(z.string().min(1)).min(1).max(500) }),
+      annotations: localWriteAnnotations,
+    },
+    handler(({ videoIds }: { videoIds: string[] }) => data.snapshot(videoIds)),
+  );
+
+  server.registerTool(
+    "youtube_snapshot_history",
+    {
+      title: "YouTube video snapshot history",
+      description: "Read stored snapshots and calculate deltas and views/hour between captures.",
+      inputSchema: z.object({
+        videoIds: z.array(z.string().min(1)).min(1).max(500),
+        limitPerVideo: z.number().int().min(2).max(365).default(30),
+      }),
+      annotations: readAnnotations,
+    },
+    handler(({ videoIds, limitPerVideo }: { videoIds: string[]; limitPerVideo: number }) => data.history(videoIds, limitPerVideo)),
+  );
+
+  server.registerTool(
+    "youtube_data_read",
+    {
+      title: "Read any YouTube Data or Live API resource",
+      description: "Read-only escape hatch for list/get/getRating/download/streamList methods exposed by googleapis.youtube(v3). Use youtube_capabilities first.",
+      inputSchema: z.object({
+        resource: z.string().min(1),
+        method: z.enum(["list", "get", "getRating", "download", "streamList"]),
+        params: z.record(z.string(), z.unknown()).optional(),
+      }),
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<YouTubeClient["dataRead"]>[0]) => client.dataRead(args)),
+  );
+
+  server.registerTool(
+    "youtube_data_call",
+    {
+      title: "Call any YouTube Data or Live API method",
+      description: "Guarded escape hatch for any method exposed by googleapis.youtube(v3). Use youtube_capabilities first. Reads work normally; writes require server flags and APPLY, destructive methods require DELETE.",
+      inputSchema: z.object({
+        resource: z.string().min(1),
+        method: z.string().min(1),
+        params: z.record(z.string(), z.unknown()).optional(),
+        body: z.record(z.string(), z.unknown()).optional(),
+        mediaPath: z.string().optional(),
+        confirm: z.enum(["APPLY", "DELETE"]).optional(),
+      }),
+      annotations: writeAnnotations,
+    },
+    handler((args: Parameters<YouTubeClient["dataCall"]>[0]) => client.dataCall(args)),
+  );
+
+  server.registerTool(
+    "youtube_download_caption",
+    {
+      title: "Download a YouTube caption track",
+      description: "Download an authorized caption track to an allowed local media path. Use captions.list through youtube_data_call to find the caption ID.",
+      inputSchema: z.object({
+        captionId: z.string().min(1),
+        outputPath: z.string().min(1),
+        format: z.enum(["sbv", "scc", "srt", "ttml", "vtt"]).default("vtt"),
+        language: z.string().optional(),
+        overwrite: z.boolean().default(false),
+      }),
+      annotations: localWriteAnnotations,
+    },
+    handler(async ({ captionId, outputPath, format, language, overwrite }: {
+      captionId: string; outputPath: string; format: "sbv" | "scc" | "srt" | "ttml" | "vtt"; language?: string; overwrite: boolean;
+    }) => {
+      const resolved = resolveMediaPath(config, outputPath, false);
+      fs.mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
+      if (fs.existsSync(resolved) && !overwrite) throw new Error(`Output file exists: ${resolved}`);
+      const { youtube } = await client.context(true);
+      client.record("captions", "download");
+      const response = await youtube.captions.download(
+        { id: captionId, tfmt: format, ...(language ? { tlang: language } : {}) },
+        { responseType: "stream" },
+      );
+      await pipeline(response.data, fs.createWriteStream(resolved, { flags: overwrite ? "w" : "wx", mode: 0o600 }));
+      return { outputPath: resolved, bytes: fs.statSync(resolved).size };
+    }),
+  );
+
+  server.registerTool(
+    "youtube_reporting_read",
+    {
+      title: "Read YouTube Reporting API",
+      description: "Read-only access to reportTypes.list, jobs.list/get, and jobs.reports.list/get without activating write approvals.",
+      inputSchema: z.object({
+        resource: z.string().min(1),
+        method: z.enum(["list", "get", "download"]),
+        params: z.record(z.string(), z.unknown()).optional(),
+      }),
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<ReportingService["read"]>[0]) => reporting.read(args)),
+  );
+
+  server.registerTool(
+    "youtube_reporting_call",
+    {
+      title: "Call YouTube Reporting API",
+      description: "Call reportTypes, jobs, or jobs.reports methods. Use resource paths such as reportTypes, jobs, or jobs.reports. Job creation requires APPLY; deletion requires DELETE.",
+      inputSchema: z.object({
+        resource: z.string().min(1),
+        method: z.string().min(1),
+        params: z.record(z.string(), z.unknown()).optional(),
+        body: z.record(z.string(), z.unknown()).optional(),
+        confirm: z.enum(["APPLY", "DELETE"]).optional(),
+      }),
+      annotations: writeAnnotations,
+    },
+    handler((args: Parameters<ReportingService["call"]>[0]) => reporting.call(args)),
+  );
+
+  server.registerTool(
+    "youtube_reporting_download",
+    {
+      title: "Download YouTube bulk report",
+      description: "Download a Reporting API CSV report to an allowed local path.",
+      inputSchema: z.object({
+        resourceName: z.string().min(1),
+        outputPath: z.string().min(1),
+        overwrite: z.boolean().default(false),
+      }),
+      annotations: localWriteAnnotations,
+    },
+    handler((args: Parameters<ReportingService["download"]>[0]) => reporting.download(args)),
+  );
+
+  return { server, store };
+}
+
+export async function serveStdio(): Promise<void> {
+  const { server, store } = createServer();
+  const transport = new StdioServerTransport();
+  const cleanup = () => {
+    try {
+      store.close();
+    } catch {
+      // Process is already exiting.
+    }
+  };
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
+  process.once("exit", cleanup);
+  await server.connect(transport);
+}
