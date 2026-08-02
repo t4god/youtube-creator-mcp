@@ -19,8 +19,8 @@ test("stable cache keys are deterministic", () => {
 });
 
 test("2026 YouTube quota buckets are classified", () => {
-  assert.deepEqual(operationCost("search", "list"), { bucket: "search", cost: 1 });
-  assert.deepEqual(operationCost("videos", "insert"), { bucket: "upload", cost: 1 });
+  assert.deepEqual(operationCost("search", "list"), { bucket: "search", cost: 100 });
+  assert.deepEqual(operationCost("videos", "insert"), { bucket: "upload", cost: 100 });
   assert.deepEqual(operationCost("videos", "list"), { bucket: "data", cost: 1 });
   assert.deepEqual(operationCost("captions", "update"), { bucket: "data", cost: 450 });
 });

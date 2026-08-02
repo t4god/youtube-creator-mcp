@@ -6,6 +6,8 @@ import type { AppConfig } from "./config.js";
 import { assertWriteEnabled, resolveMediaPath } from "./config.js";
 import { McpUserError } from "./errors.js";
 import type { YouTubeClient } from "./google.js";
+import type { Store } from "./store.js";
+import { normalizeError } from "./errors.js";
 
 const READ_METHODS = new Set(["list", "get", "download"]);
 
@@ -22,6 +24,7 @@ export class ReportingService {
   constructor(
     private readonly config: AppConfig,
     private readonly client: YouTubeClient,
+    private readonly store: Store,
   ) {}
 
   async call(input: {
@@ -50,11 +53,48 @@ export class ReportingService {
       );
     }
     const params = { ...(input.params ?? {}), ...(input.body ? { requestBody: input.body } : {}) };
-    const response = await (method as (params: Record<string, unknown>) => Promise<{ data: unknown }>).call(
-      resource,
-      params,
-    );
-    return response.data;
+    if (isRead) {
+      const response = await this.client.executeRead(input.resource, input.method, (options) =>
+        (method as (params: Record<string, unknown>, options: unknown) => Promise<{ data: unknown }>).call(
+          resource,
+          params,
+          options,
+        ), false,
+      );
+      return response.data;
+    }
+    this.store.recordWriteAudit({
+      operation: `reporting.${input.resource}.${input.method}`,
+      confirmation: input.confirm ?? "",
+      outcome: "started",
+    });
+    try {
+      const response = await this.client.executeWrite(
+        input.resource,
+        input.method,
+        (options) =>
+          (method as (params: Record<string, unknown>, options: unknown) => Promise<{ data: unknown }>).call(
+            resource,
+            params,
+            options,
+          ),
+        false,
+      );
+      this.store.recordWriteAudit({
+        operation: `reporting.${input.resource}.${input.method}`,
+        confirmation: input.confirm ?? "",
+        outcome: "succeeded",
+      });
+      return response.data;
+    } catch (error) {
+      this.store.recordWriteAudit({
+        operation: `reporting.${input.resource}.${input.method}`,
+        confirmation: input.confirm ?? "",
+        outcome: "failed",
+        details: normalizeError(error),
+      });
+      throw error;
+    }
   }
 
   async read(input: {
@@ -85,9 +125,14 @@ export class ReportingService {
       );
     }
     const { reporting } = await this.client.context(true);
-    const response = await reporting.media.download(
-      { resourceName: input.resourceName },
-      { responseType: "stream" },
+    const response = await this.client.executeRead(
+      "reporting.media",
+      "download",
+      (options) => reporting.media.download(
+        { resourceName: input.resourceName },
+        { ...options, responseType: "stream" },
+      ),
+      false,
     );
     await pipeline(response.data, fs.createWriteStream(outputPath, { flags: input.overwrite ? "w" : "wx", mode: 0o600 }));
     const stat = fs.statSync(outputPath);

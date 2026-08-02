@@ -1,6 +1,6 @@
 {
   "name": "youtube-creator-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Full-scale local YouTube MCP server for research, analytics, reporting, live streams, and guarded channel management.",
   "license": "MIT",
   "author": "t4god",
@@ -12,7 +12,14 @@
   "bugs": {
     "url": "https://github.com/t4god/youtube-creator-mcp/issues"
   },
-  "keywords": ["mcp", "youtube", "youtube-analytics", "youtube-api", "codex", "claude"],
+  "keywords": [
+    "mcp",
+    "youtube",
+    "youtube-analytics",
+    "youtube-api",
+    "codex",
+    "claude"
+  ],
   "type": "module",
   "bin": {
     "youtube-mcp": "dist/cli.js"
@@ -27,10 +34,25 @@
     "auth": "node dist/cli.js auth",
     "status": "node dist/cli.js status",
     "test": "node --import tsx --test test/**/*.test.ts",
+    "validate": "npm run check && npm test && npm run build && npm pack --dry-run",
     "inspect": "npx @modelcontextprotocol/inspector node dist/cli.js serve",
     "prepublishOnly": "npm run check && npm test && npm run build"
   },
-  "files": ["dist", "bin", "native", "scripts", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "bin",
+    "native",
+    "scripts",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
     "node": ">=22.5"
   },

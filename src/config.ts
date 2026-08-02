@@ -8,10 +8,14 @@ export interface AppConfig {
   databasePath: string;
   exportsDir: string;
   enableWrites: boolean;
+  enablePublication: boolean;
   enableDestructive: boolean;
   mediaRoots: string[];
   apiKey?: string;
   cacheTtlSeconds: number;
+  requestTimeoutMs: number;
+  maxReadRetries: number;
+  retryBaseDelayMs: number;
   secretStore: "auto" | "keychain" | "file";
 }
 
@@ -36,6 +40,14 @@ function parsePositiveInteger(name: string, fallback: number): number {
   const value = Number.parseInt(process.env[name] ?? String(fallback), 10);
   if (!Number.isFinite(value) || value <= 0) {
     throw new McpUserError(`${name} must be a positive integer.`, "invalid_configuration");
+  }
+  return value;
+}
+
+function parseNonNegativeInteger(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? String(fallback), 10);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new McpUserError(`${name} must be a non-negative integer.`, "invalid_configuration");
   }
   return value;
 }
@@ -85,12 +97,26 @@ export function loadConfig(): AppConfig {
     databasePath: path.join(dataDir, "youtube.sqlite"),
     exportsDir,
     enableWrites: envBool("YOUTUBE_MCP_ENABLE_WRITES"),
+    enablePublication: envBool("YOUTUBE_MCP_ENABLE_PUBLICATION"),
     enableDestructive: envBool("YOUTUBE_MCP_ENABLE_DESTRUCTIVE"),
     mediaRoots: roots,
     ...(process.env.YOUTUBE_API_KEY ? { apiKey: process.env.YOUTUBE_API_KEY } : {}),
     cacheTtlSeconds: parsePositiveInteger("YOUTUBE_MCP_CACHE_TTL_SECONDS", 300),
+    requestTimeoutMs: parsePositiveInteger("YOUTUBE_MCP_REQUEST_TIMEOUT_MS", 30_000),
+    maxReadRetries: parseNonNegativeInteger("YOUTUBE_MCP_MAX_READ_RETRIES", 3),
+    retryBaseDelayMs: parsePositiveInteger("YOUTUBE_MCP_RETRY_BASE_DELAY_MS", 500),
     secretStore: parseSecretStore(),
   };
+}
+
+export function assertPublicationEnabled(config: AppConfig): void {
+  assertWriteEnabled(config);
+  if (!config.enablePublication) {
+    throw new McpUserError(
+      "Publishing or scheduling is disabled. Set YOUTUBE_MCP_ENABLE_PUBLICATION=true only after reviewing the final video and metadata.",
+      "publication_disabled",
+    );
+  }
 }
 
 export function assertWriteEnabled(config: AppConfig, destructive = false): void {

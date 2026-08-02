@@ -10,8 +10,8 @@ Use it with Codex, Claude Desktop, Cursor, or another MCP client to analyze your
 channel, research public topics, build local competitor history, and perform carefully
 gated channel operations.
 
-> Status: `v0.1.0`. Read-only analytics and research are the recommended path.
-> Write tools are advanced, opt-in, and disabled by default.
+> Status: `v0.2.0`. Read-only analytics and research are the recommended path.
+> Creator writes are typed, audited, opt-in, and disabled by default.
 
 ## Why this exists
 
@@ -38,8 +38,11 @@ competitor analytics. Pair it with other research sources when those signals mat
 - Linux and Windows use private per-user files by default.
 - Research cache and snapshots live in a local SQLite database.
 - External writes require server configuration **and** per-call confirmation.
+- Publication has its own independent server gate and `PUBLISH` confirmation.
 - Destructive operations require a second independent server flag and stronger confirmation.
 - Upload and download paths are restricted to explicit media roots with symlink containment checks.
+- Upload operation IDs and fingerprints block accidental duplicate submissions.
+- Idempotent reads use bounded retries and timeouts; writes are never blindly retried.
 
 Never commit a Google OAuth client JSON, API key, access token, or refresh token.
 
@@ -221,6 +224,21 @@ not current VPH; collect repeated snapshots before claiming real velocity.
 - `youtube_download_caption`
 
 Use `youtube_capabilities` before a generic call and prefer typed high-level tools.
+Generic `videos.insert` and `thumbnails.set` calls are intentionally rejected so uploads cannot
+bypass media validation and duplicate protection.
+
+### Creator operations
+
+- `youtube_upload_plan`: validate and hash the exact local file and final metadata without contacting YouTube
+- `youtube_upload_video`: private-by-default upload with operation-ID duplicate protection
+- `youtube_update_video`: merge-safe metadata, audience, synthetic-media, visibility, and schedule updates
+- `youtube_set_thumbnail`: validated JPEG/PNG thumbnail upload (maximum 2 MB)
+- `youtube_upload_status`: processing, file, metadata, and visibility status for an owned video
+- `youtube_write_audit`: local starts, successes, failures, and deduplicated attempts
+
+Always call `youtube_upload_plan` first and present its exact plan to the channel owner. Use a
+stable, unique `operationId` for one intended upload; never reuse it for different content.
+Uploads default to `private` even when the caller omits visibility.
 
 ## Write safety
 
@@ -229,6 +247,14 @@ Writes are disabled in the server configuration by default. To perform a reviewe
 1. Authorize with `manager` or `full`.
 2. Set `YOUTUBE_MCP_ENABLE_WRITES=true` in the MCP server environment.
 3. Include `confirm="APPLY"` in the tool call.
+
+Making a video public or unlisted, scheduling publication, or using a generic live-broadcast
+publication action also requires:
+
+```text
+YOUTUBE_MCP_ENABLE_PUBLICATION=true
+confirm="PUBLISH"
+```
 
 Methods such as `delete`, `unset`, or `reportAbuse` additionally require:
 
@@ -247,18 +273,24 @@ require comma-separated absolute directories in `YOUTUBE_MCP_MEDIA_ROOTS`.
 | `YOUTUBE_API_KEY` | unset | Public Data API reads without OAuth |
 | `YOUTUBE_MCP_SECRET_STORE` | `auto` | `auto`, `keychain`, or `file` |
 | `YOUTUBE_MCP_ENABLE_WRITES` | `false` | Enable non-destructive external writes |
+| `YOUTUBE_MCP_ENABLE_PUBLICATION` | `false` | Independently enable public, unlisted, scheduled, and live publication |
 | `YOUTUBE_MCP_ENABLE_DESTRUCTIVE` | `false` | Enable destructive external writes |
 | `YOUTUBE_MCP_MEDIA_ROOTS` | empty | Allowed upload/download directories |
 | `YOUTUBE_MCP_DATA_DIR` | platform application-data directory | Database, cache, exports, file credentials |
 | `YOUTUBE_MCP_CACHE_TTL_SECONDS` | `300` | Topic-research cache lifetime |
+| `YOUTUBE_MCP_REQUEST_TIMEOUT_MS` | `30000` | Timeout for each idempotent read attempt |
+| `YOUTUBE_MCP_MAX_READ_RETRIES` | `3` | Retry count for 429/5xx and transient network read failures |
+| `YOUTUBE_MCP_RETRY_BASE_DELAY_MS` | `500` | Exponential backoff base delay with jitter |
 
 On macOS, an existing pre-release data directory at `~/Library/Application Support/youtube-mcp`
 is reused automatically so local snapshots and authorization continue working.
 
 ## Quotas
 
-The MCP records an estimate of calls it makes. Google Cloud Console remains authoritative.
-Failed API calls may still consume quota, and quota resets follow Google's Pacific-time schedule.
+The MCP records an estimate of Data API units it consumes. `search.list` and `videos.insert`
+are estimated at 100 units each, and all methods draw from the same project quota pool. Google
+Cloud Console remains authoritative. Failed calls and read retries may still consume quota,
+and quota resets follow Google's Pacific-time schedule.
 
 The ledger does not see calls from other applications using the same Google Cloud project.
 
@@ -282,11 +314,13 @@ npm ci
 npm run check
 npm test
 npm run build
+npm run validate
 npm run inspect
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
-[CHANGELOG.md](CHANGELOG.md).
+[CHANGELOG.md](CHANGELOG.md). Deployment, backup, rotation, and incident procedures are in
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## License
 

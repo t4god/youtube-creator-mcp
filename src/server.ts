@@ -12,10 +12,12 @@ import { DataService } from "./data-service.js";
 import { AnalyticsService } from "./analytics-service.js";
 import { ResearchService } from "./research-service.js";
 import { ReportingService } from "./reporting-service.js";
+import { CreatorService } from "./creator-service.js";
 import { toolError, toolResult } from "./result.js";
 
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
 const writeAnnotations = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+const safeWriteAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
 const localWriteAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
 
 function handler<T>(fn: (args: T) => Promise<unknown> | unknown) {
@@ -35,13 +37,14 @@ export function createServer() {
   const data = new DataService(client, store);
   const analytics = new AnalyticsService(client);
   const research = new ResearchService(config, store, client, data);
-  const reporting = new ReportingService(config, client);
+  const reporting = new ReportingService(config, client, store);
+  const creator = new CreatorService(config, store, client);
 
   const server = new McpServer(
-    { name: "youtube-mcp", version: "0.1.0" },
+    { name: "youtube-mcp", version: "0.2.0" },
     {
       instructions:
-        "Use high-level read tools before youtube_data_call. Search calls have a separate daily bucket, so reuse cached topic research when possible. Snapshot competitor videos repeatedly before claiming true velocity. Writes are disabled by default; never enable them or pass APPLY/DELETE without explicit user approval. Analytics and private channel data require OAuth. Do not expose OAuth tokens, client secrets, or Keychain contents.",
+        "Use high-level tools before generic API calls. Search is quota-expensive, so reuse cached topic research when possible. Snapshot competitor videos repeatedly before claiming true velocity. Writes are disabled by default. Publishing has an independent gate and requires PUBLISH; ordinary writes require APPLY; destructive actions require DELETE. Never bypass final user review. Analytics and private channel data require OAuth. Do not expose OAuth tokens, client secrets, or Keychain contents.",
     },
   );
 
@@ -53,7 +56,16 @@ export function createServer() {
       inputSchema: z.object({}),
       annotations: readAnnotations,
     },
-    handler(async () => ({ ...(await authStatus()), authProfiles: ["readonly", "monetary", "manager", "full", "partner"] })),
+    handler(async () => ({
+      ...(await authStatus()),
+      authProfiles: ["readonly", "monetary", "manager", "full", "partner"],
+      safety: {
+        writesEnabled: config.enableWrites,
+        publicationEnabled: config.enablePublication,
+        destructiveEnabled: config.enableDestructive,
+        allowedMediaRoots: config.mediaRoots,
+      },
+    })),
   );
 
   server.registerTool(
@@ -66,7 +78,8 @@ export function createServer() {
     },
     handler(() => ({
       localEstimate: store.quotaToday(),
-      defaultDailyBuckets: { searchCalls: 100, uploadCalls: 100, otherDataUnits: 10_000 },
+      typicalDefaultDailyQuotaUnits: 10_000,
+      note: "All Data API methods consume the same project quota pool; search.list and videos.insert are estimated at 100 units each.",
       resetTimezone: "America/Los_Angeles",
     })),
   );
@@ -94,6 +107,12 @@ export function createServer() {
         "youtube_compare_topics",
         "youtube_snapshot_videos",
         "youtube_snapshot_history",
+        "youtube_upload_plan",
+        "youtube_upload_video",
+        "youtube_update_video",
+        "youtube_set_thumbnail",
+        "youtube_upload_status",
+        "youtube_write_audit",
         "youtube_data_read",
         "youtube_reporting_read",
       ],
@@ -291,6 +310,102 @@ export function createServer() {
     handler(({ videoIds, limitPerVideo }: { videoIds: string[]; limitPerVideo: number }) => data.history(videoIds, limitPerVideo)),
   );
 
+  const uploadSchema = z.object({
+    mediaPath: z.string().min(1),
+    title: z.string().min(1).max(100),
+    description: z.string().max(5_000).optional(),
+    tags: z.array(z.string().min(1)).max(500).optional(),
+    categoryId: z.string().regex(/^\d+$/).optional(),
+    privacyStatus: z.enum(["private", "unlisted", "public"]).default("private"),
+    publishAt: z.string().datetime().optional(),
+    selfDeclaredMadeForKids: z.boolean().optional(),
+    containsSyntheticMedia: z.boolean().optional(),
+    notifySubscribers: z.boolean().default(true),
+    operationId: z.string().min(8).max(128),
+    confirm: z.enum(["APPLY", "PUBLISH"]).optional(),
+  });
+
+  server.registerTool(
+    "youtube_upload_plan",
+    {
+      title: "Preview a YouTube video upload",
+      description: "Validate an allowed local video, hash its content and final metadata, detect a reused operation ID, and show the exact gates required. Does not contact YouTube or mutate state.",
+      inputSchema: uploadSchema,
+      annotations: readAnnotations,
+    },
+    handler((args: Parameters<CreatorService["uploadPlan"]>[0]) => creator.uploadPlan(args)),
+  );
+
+  server.registerTool(
+    "youtube_upload_video",
+    {
+      title: "Upload a YouTube video",
+      description: "Upload a validated local video with duplicate protection. Defaults to private and requires APPLY. Public, unlisted, or scheduled uploads additionally require the publication gate and PUBLISH.",
+      inputSchema: uploadSchema,
+      annotations: safeWriteAnnotations,
+    },
+    handler((args: Parameters<CreatorService["upload"]>[0]) => creator.upload(args)),
+  );
+
+  server.registerTool(
+    "youtube_update_video",
+    {
+      title: "Update YouTube video metadata or visibility",
+      description: "Safely merge selected metadata/status fields into the current video. Publishing, unlisting, or scheduling requires the independent publication gate and PUBLISH.",
+      inputSchema: z.object({
+        videoId: z.string().min(1),
+        title: z.string().min(1).max(100).optional(),
+        description: z.string().max(5_000).optional(),
+        tags: z.array(z.string().min(1)).max(500).optional(),
+        categoryId: z.string().regex(/^\d+$/).optional(),
+        privacyStatus: z.enum(["private", "unlisted", "public"]).optional(),
+        publishAt: z.string().datetime().nullable().optional(),
+        selfDeclaredMadeForKids: z.boolean().optional(),
+        containsSyntheticMedia: z.boolean().optional(),
+        confirm: z.enum(["APPLY", "PUBLISH"]).optional(),
+      }),
+      annotations: safeWriteAnnotations,
+    },
+    handler((args: Parameters<CreatorService["updateVideo"]>[0]) => creator.updateVideo(args)),
+  );
+
+  server.registerTool(
+    "youtube_set_thumbnail",
+    {
+      title: "Set a YouTube video thumbnail",
+      description: "Set a validated JPEG/PNG thumbnail up to 2 MB from an allowed media root. Requires the write gate and APPLY.",
+      inputSchema: z.object({
+        videoId: z.string().min(1),
+        imagePath: z.string().min(1),
+        confirm: z.literal("APPLY").optional(),
+      }),
+      annotations: safeWriteAnnotations,
+    },
+    handler((args: Parameters<CreatorService["setThumbnail"]>[0]) => creator.setThumbnail(args)),
+  );
+
+  server.registerTool(
+    "youtube_upload_status",
+    {
+      title: "Check YouTube upload processing",
+      description: "Read upload processing, file, metadata, and visibility status for an owned video.",
+      inputSchema: z.object({ videoId: z.string().min(1) }),
+      annotations: readAnnotations,
+    },
+    handler(({ videoId }: { videoId: string }) => creator.uploadStatus(videoId)),
+  );
+
+  server.registerTool(
+    "youtube_write_audit",
+    {
+      title: "Read the local YouTube write audit",
+      description: "Review locally recorded starts, successes, failures, and deduplicated upload attempts. Does not include OAuth credentials or media content.",
+      inputSchema: z.object({ limit: z.number().int().min(1).max(500).default(100) }),
+      annotations: readAnnotations,
+    },
+    handler(({ limit }: { limit: number }) => store.writeAudit(limit)),
+  );
+
   server.registerTool(
     "youtube_data_read",
     {
@@ -310,14 +425,14 @@ export function createServer() {
     "youtube_data_call",
     {
       title: "Call any YouTube Data or Live API method",
-      description: "Guarded escape hatch for any method exposed by googleapis.youtube(v3). Use youtube_capabilities first. Reads work normally; writes require server flags and APPLY, destructive methods require DELETE.",
+      description: "Guarded escape hatch for methods exposed by googleapis.youtube(v3). Reads work normally; writes require APPLY, publishing/scheduling requires PUBLISH, and destructive methods require DELETE. Video and thumbnail media writes must use their typed tools.",
       inputSchema: z.object({
         resource: z.string().min(1),
         method: z.string().min(1),
         params: z.record(z.string(), z.unknown()).optional(),
         body: z.record(z.string(), z.unknown()).optional(),
         mediaPath: z.string().optional(),
-        confirm: z.enum(["APPLY", "DELETE"]).optional(),
+        confirm: z.enum(["APPLY", "PUBLISH", "DELETE"]).optional(),
       }),
       annotations: writeAnnotations,
     },
@@ -345,10 +460,13 @@ export function createServer() {
       fs.mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
       if (fs.existsSync(resolved) && !overwrite) throw new Error(`Output file exists: ${resolved}`);
       const { youtube } = await client.context(true);
-      client.record("captions", "download");
-      const response = await youtube.captions.download(
-        { id: captionId, tfmt: format, ...(language ? { tlang: language } : {}) },
-        { responseType: "stream" },
+      const response = await client.executeRead(
+        "captions",
+        "download",
+        (options) => youtube.captions.download(
+          { id: captionId, tfmt: format, ...(language ? { tlang: language } : {}) },
+          { ...options, responseType: "stream" },
+        ),
       );
       await pipeline(response.data, fs.createWriteStream(resolved, { flags: overwrite ? "w" : "wx", mode: 0o600 }));
       return { outputPath: resolved, bytes: fs.statSync(resolved).size };

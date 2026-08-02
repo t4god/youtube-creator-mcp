@@ -29,7 +29,21 @@ External writes require all applicable controls:
 2. `YOUTUBE_MCP_ENABLE_WRITES=true` in the server environment.
 3. `confirm="APPLY"` in the tool call.
 
+Publishing, unlisting, scheduling, and live-broadcast publication additionally require
+`YOUTUBE_MCP_ENABLE_PUBLICATION=true` and `confirm="PUBLISH"`. This gate is separate so
+metadata management does not silently grant publication authority.
+
 Deletion, abuse reporting, and other destructive operations additionally require
 `YOUTUBE_MCP_ENABLE_DESTRUCTIVE=true` and `confirm="DELETE"`.
 
 Keep both flags disabled unless you are intentionally performing a reviewed operation.
+
+Typed uploads require a caller-supplied operation ID and record a content-and-metadata
+fingerprint. Completed operations return the prior result instead of uploading again.
+In-progress or failed operations are not automatically retried: first verify YouTube Studio,
+because a network or process failure can happen after YouTube accepted the media but before
+the local database recorded success.
+
+Write audit records contain operation names, targets, outcomes, and normalized errors. They
+do not contain OAuth credentials or media content. They are stored in the local SQLite file
+and should still be protected as channel-management metadata.

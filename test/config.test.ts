@@ -3,7 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { assertWriteEnabled, loadConfig, resolveMediaPath, type AppConfig } from "../src/config.js";
+import {
+  assertPublicationEnabled,
+  assertWriteEnabled,
+  loadConfig,
+  resolveMediaPath,
+  type AppConfig,
+} from "../src/config.js";
 import { McpUserError } from "../src/errors.js";
 
 function baseConfig(root: string): AppConfig {
@@ -12,9 +18,13 @@ function baseConfig(root: string): AppConfig {
     databasePath: path.join(root, "db.sqlite"),
     exportsDir: path.join(root, "exports"),
     enableWrites: false,
+    enablePublication: false,
     enableDestructive: false,
     mediaRoots: [root],
     cacheTtlSeconds: 300,
+    requestTimeoutMs: 30_000,
+    maxReadRetries: 3,
+    retryBaseDelayMs: 500,
     secretStore: "file",
   };
 }
@@ -65,4 +75,9 @@ test("write and destructive operations require independent gates", () => {
   assert.doesNotThrow(() => assertWriteEnabled(writes));
   assert.throws(() => assertWriteEnabled(writes, true), (error: unknown) => error instanceof McpUserError && error.code === "destructive_actions_disabled");
   assert.doesNotThrow(() => assertWriteEnabled({ ...writes, enableDestructive: true }, true));
+  assert.throws(
+    () => assertPublicationEnabled(writes),
+    (error: unknown) => error instanceof McpUserError && error.code === "publication_disabled",
+  );
+  assert.doesNotThrow(() => assertPublicationEnabled({ ...writes, enablePublication: true }));
 });
