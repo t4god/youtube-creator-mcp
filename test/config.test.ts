@@ -46,7 +46,7 @@ test("media paths reject lexical and symlink escapes", () => {
   const outsideFile = path.join(outside, "outside.mp4");
   fs.writeFileSync(insideFile, "inside");
   fs.writeFileSync(outsideFile, "outside");
-  fs.symlinkSync(outside, path.join(allowed, "escape"));
+  fs.symlinkSync(outside, path.join(allowed, "escape"), process.platform === "win32" ? "junction" : "dir");
   try {
     const config = baseConfig(allowed);
     assert.equal(resolveMediaPath(config, insideFile, true), fs.realpathSync(insideFile));
