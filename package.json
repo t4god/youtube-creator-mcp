@@ -57,7 +57,7 @@
     "node": ">=22.5"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "google-auth-library": "^10.9.1",
     "googleapis": "^173.0.0",
     "zod": "^4.4.3"
